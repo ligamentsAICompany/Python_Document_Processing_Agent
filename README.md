@@ -44,10 +44,40 @@ Open http://127.0.0.1:8000
 | GET | `/api/session/{id}` | Indexing status |
 | POST | `/api/session/{id}/chat` | SSE chat (only when `ready`) |
 
-## Phase 2 (planned)
+## GCS (local)
 
-- GCS storage on upload
-- Auth, rate limits
+Place `ligaments-portal-9eaf283845e0.json` in the project root (gitignored). It uses service account `bucket-access@ligaments-portal.iam.gserviceaccount.com`.
+
+```bash
+export GOOGLE_APPLICATION_CREDENTIALS="$(pwd)/ligaments-portal-9eaf283845e0.json"
+export GCP_PROJECT_ID=ligaments-portal
+export GCS_BUCKET=rocket_uploaded_files
+export GEMINI_API_KEY=your-key
+uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+## Deploy (Cloud Run)
+
+Do **not** bake the JSON key into the Docker image. Cloud Run uses the same `bucket-access` service account via metadata (ADC).
+
+```bash
+export GEMINI_API_KEY=your-key   # required for LLM
+chmod +x scripts/deploy_cloud_run.sh
+./scripts/deploy_cloud_run.sh
+```
+
+Or manually:
+
+```bash
+docker buildx build --platform linux/amd64 -t gcr.io/ligaments-portal/docs-processing-agent-01:latest -f Dockerfile --push .
+
+gcloud run deploy docs-processing-agent-01 \
+  --image=gcr.io/ligaments-portal/docs-processing-agent-01:latest \
+  --platform=managed --region=us-central1 --project=ligaments-portal \
+  --service-account=bucket-access@ligaments-portal.iam.gserviceaccount.com \
+  --allow-unauthenticated \
+  --set-env-vars="GCP_PROJECT_ID=ligaments-portal,GCS_BUCKET=rocket_uploaded_files,PAGEINDEX_REPO=/app/PageIndex,DATA_DIR=/tmp/data,LLM_PROVIDER=gemini,GEMINI_API_KEY=${GEMINI_API_KEY}"
+```
 
 ## Notes
 

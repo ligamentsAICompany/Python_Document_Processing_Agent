@@ -35,6 +35,18 @@ def _credentials_path() -> str | None:
     return str(p.resolve()) if p.is_file() else raw
 
 
+def _gcp_project() -> str | None:
+    s = get_settings()
+    for candidate in (
+        s.gcp_project_id,
+        os.environ.get("GOOGLE_CLOUD_PROJECT"),
+        os.environ.get("GCP_PROJECT"),
+    ):
+        if candidate and str(candidate).strip():
+            return str(candidate).strip()
+    return None
+
+
 def get_storage_client():
     from google.cloud import storage
     from google.oauth2 import service_account
@@ -45,8 +57,12 @@ def get_storage_client():
             cred_path,
             scopes=["https://www.googleapis.com/auth/cloud-platform"],
         )
+        logger.debug("GCS client: service account file %s", cred_path)
         return storage.Client(credentials=creds, project=creds.project_id)
-    return storage.Client()
+
+    project = _gcp_project()
+    logger.debug("GCS client: application default credentials (project=%s)", project)
+    return storage.Client(project=project) if project else storage.Client()
 
 
 def _detect_bucket_location(client) -> str:

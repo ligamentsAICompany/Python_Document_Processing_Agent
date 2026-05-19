@@ -4,7 +4,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PORT=8080 \
     PAGEINDEX_REPO=/app/PageIndex \
-    DATA_DIR=/tmp/data
+    DATA_DIR=/tmp/data \
+    GCP_PROJECT_ID=ligaments-portal \
+    GCS_BUCKET=rocket_uploaded_files
 
 WORKDIR /app
 
@@ -20,7 +22,6 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
 RUN git clone --depth 1 https://github.com/VectifyAI/PageIndex.git /app/PageIndex
 
 COPY app ./app
-COPY static ./static
 
 RUN mkdir -p /tmp/data/uploads /tmp/data/indexes /tmp/data/sessions
 

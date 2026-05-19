@@ -31,7 +31,9 @@ class Settings(BaseSettings):
     data_dir: str = "./data"
     max_upload_mb: int = 50
 
+    # Local dev: path to ligaments-portal-*.json (see README). Cloud Run: leave unset (ADC).
     google_application_credentials: str = ""
+    gcp_project_id: str = "ligaments-portal"
     gcs_bucket: str = "rocket_uploaded_files"
     gcs_location: str = ""
 
