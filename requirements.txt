@@ -1,0 +1,23 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+python-dotenv>=1.0.0
+pydantic-settings>=2.0.0
+python-multipart>=0.0.9
+langchain-openai>=0.2.0
+langchain-google-genai>=2.0.0
+langchain-core>=1.0.0,<2.0.0
+openai>=1.50.0
+google-generativeai>=0.8.0
+mammoth>=1.8.0
+markdownify>=0.13.0
+pandas>=2.2.0
+openpyxl>=3.1.0
+google-cloud-storage>=2.14.0
+google-auth>=2.0.0
+httpx>=0.27.0
+
+# PageIndex subprocess (run_pageindex.py) — must be in the same env as uvicorn
+litellm==1.83.7
+pymupdf==1.26.4
+PyPDF2==3.0.1
+pyyaml==6.0.2

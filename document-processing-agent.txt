@@ -1,0 +1,478 @@
+══════════════════════════════════════════════════════════════════════
+  DOCUMENT PROCESSING AGENT — API SPECIFICATION (v1)
+  Owner: Platform / AI  |  Consumer: Any Node/Next.js service
+  Provider: Python Document-Processing Service
+══════════════════════════════════════════════════════════════════════
+
+──────────────────────────────────────────────────────────────────────
+1. PURPOSE
+──────────────────────────────────────────────────────────────────────
+A single, generic HTTP service that:
+  • Accepts a user prompt + one or more document attachments.
+  • Resolves attachments from GCS, Azure Blob, a direct/presigned URL,
+    or inline bytes — the caller picks per attachment.
+  • On first contact with a document (COLD): parses it, builds a
+    "pageindex" (structured, retrieval-ready representation), answers
+    the prompt, and returns the pageindex in the response so the
+    caller can persist it next to the source file.
+  • On subsequent contact (WARM): caller passes the previously
+    generated pageindex back in; the agent skips parsing and answers
+    faster and cheaper.
+
+The same service is reused across every project. Project-specific
+logic stays in the caller (Next.js) — the Python service is domain-
+agnostic.
+
+──────────────────────────────────────────────────────────────────────
+2. BASE URL & VERSIONING
+──────────────────────────────────────────────────────────────────────
+  Base URL : https://<doc-agent-host>/api
+  Version  : Path-prefixed → /v1/...
+  Breaking changes ship as /v2/... ; /v1 remains stable.
+
+──────────────────────────────────────────────────────────────────────
+3. AUTHENTICATION
+──────────────────────────────────────────────────────────────────────
+  Header   : Authorization: Bearer <SERVICE_API_KEY>
+  Header   : X-Project-Id: <caller-project-slug>     (required)
+  Header   : X-Request-Id: <uuid v4>                  (recommended)
+
+  • SERVICE_API_KEY is issued per caller-project; rotated via vault.
+  • Never embed long-lived cloud credentials in source. Pass them
+    per-request in the attachment block, or — preferred — use
+    presigned URLs and skip credentials altogether.
+
+──────────────────────────────────────────────────────────────────────
+4. ENDPOINTS
+──────────────────────────────────────────────────────────────────────
+
+  4.1  POST /v1/documents/process
+       Main endpoint. Answers a prompt against attachments. Returns
+       pageindex(es) on cold path; reuses them on warm path.
+
+  4.2  POST /v1/documents/index
+       Builds pageindex(es) only, no prompt/answer step. Useful for
+       background pre-indexing pipelines. The pageindex tree file should in .json format
+
+  4.3  GET  /v1/health
+       Liveness + readiness. Returns model + parser versions.
+
+  4.4  GET  /v1/capabilities
+       Returns supported MIME types, max sizes, available models,
+       and current pageindex schema version.
+
+──────────────────────────────────────────────────────────────────────
+5. REQUEST SCHEMA — POST /v1/documents/process
+──────────────────────────────────────────────────────────────────────
+Content-Type: application/json   (use multipart only for inline bytes)
+
+{
+  "prompt": "string — required. The user's question/instruction.",
+
+  "attachments": [                  // 1..N, required
+    {
+      "id":          "att_1",       // caller-assigned, echoed back
+      "filename":    "contract.pdf",
+      "mime_type":   "application/pdf",   // optional, sniffed if absent
+      "source": {
+        "type": "gcs | azure_blob | url | inline",
+        "...": "...fields per type, see §6"
+      },
+      "pageindex": {                // OPTIONAL — present on WARM path
+        "type": "inline | gcs | azure_blob | url",
+        "...": "...same source shape as above, OR inline JSON"
+      }
+    }
+  ],
+
+  "options": {
+    "return_pageindex":  true,      // default true on cold, ignored on warm
+    "model":             "default", // or a specific model id
+    "max_output_tokens": 2048,
+    "temperature":       0.2,
+    "language":          "auto",    // BCP-47 or "auto"
+    "retrieval": {
+      "top_k":           8,
+      "rerank":          true
+    }
+  },
+
+  "metadata": {                     // free-form, logged for tracing
+    "user_id":   "...",
+    "session":   "...",
+    "trace_id":  "...",
+    "tags":      ["..."]
+  }
+}
+
+──────────────────────────────────────────────────────────────────────
+6. ATTACHMENT SOURCE BLOCKS  (used for both `source` and `pageindex`)
+──────────────────────────────────────────────────────────────────────
+
+  6.1  GCS
+  {
+    "type":   "gcs",
+    "bucket": "my-bucket",
+    "object": "path/to/file.pdf",
+    "auth": {
+      "mode": "signed_url | service_account | adc",
+      "signed_url":      "https://...",          // if mode=signed_url
+      "service_account": { ...JSON key... },      // if mode=service_account
+      "impersonate":     "sa@project.iam..."      // optional
+    }
+  }
+  → PREFERRED: mode="signed_url" — no credentials cross the wire.
+
+  6.2  Azure Blob
+  {
+    "type":      "azure_blob",
+    "account":   "myaccount",
+    "container": "docs",
+    "blob":      "path/to/file.pdf",
+    "auth": {
+      "mode": "sas_url | sas_token | account_key | connection_string",
+      "sas_url":           "https://...?sv=...",   // if mode=sas_url
+      "sas_token":         "?sv=...",              // if mode=sas_token
+      "account_key":       "...",                  // if mode=account_key
+      "connection_string": "DefaultEndpoints..."   // if mode=connection_string
+    }
+  }
+  → PREFERRED: mode="sas_url".
+
+  6.3  Direct URL  (presigned, public, or HTTP-basic protected)
+  {
+    "type": "url",
+    "url":  "https://...",
+    "headers": { "Authorization": "Bearer ..." }   // optional
+  }
+
+  6.4  Inline bytes  (only via multipart/form-data — see §9)
+  {
+    "type":     "inline",
+    "ref":      "part-name-in-multipart-body",
+    "encoding": "binary | base64"
+  }
+
+  6.5  Inline pageindex JSON  (warm path, small indexes)
+  {
+    "type": "inline",
+    "data": { ...pageindex object... }
+  }
+
+Size limits:
+  • Single attachment ≤ 100 MB (configurable per deployment)
+  • Total request ≤ 200 MB
+  • Inline base64 not recommended above 5 MB — use storage refs.
+
+──────────────────────────────────────────────────────────────────────
+7. RESPONSE SCHEMA
+──────────────────────────────────────────────────────────────────────
+HTTP 200 on success. All errors use the envelope in §10.
+
+{
+  "request_id": "uuid",
+  "status":     "success",
+  "answer": {
+    "text":      "string — the model's response to `prompt`",
+    "citations": [
+      {
+        "attachment_id": "att_1",
+        "page":          7,
+        "span":          [1023, 1180],     // char offsets in page text
+        "snippet":       "...relevant excerpt..."
+      }
+    ]
+  },
+
+  "attachments": [
+    {
+      "id":             "att_1",
+      "pageindex_used": "generated | reused",
+      "pageindex":      { ...pageindex object... },   // only if generated
+      "suggested_path": "path/to/file.pdf.pageindex.json",
+      "checksum":       "sha256:abc...",              // of source bytes
+      "schema_version": "pageindex/1.0"
+    }
+  ],
+
+  "usage": {
+    "input_tokens":   1234,
+    "output_tokens":  456,
+    "pages_parsed":   12,            // 0 on warm path
+    "model":          "..."
+  },
+
+  "timing_ms": {
+    "fetch":    180,
+    "parse":    1420,                // 0 on warm path
+    "retrieve": 95,
+    "generate": 760,
+    "total":    2455
+  }
+}
+
+The caller (Next.js) is responsible for persisting `pageindex` to
+`suggested_path` (or anywhere it likes) and sending it back on the
+next call for that document.
+
+──────────────────────────────────────────────────────────────────────
+8. PAGEINDEX OBJECT  (schema_version: "pageindex/1.0")
+──────────────────────────────────────────────────────────────────────
+Stable, JSON-serializable, self-describing. Caller treats it as
+opaque — only the Python service reads/writes the internals.
+
+{
+  "schema_version": "pageindex/1.0",
+  "source": {
+    "filename":   "contract.pdf",
+    "mime_type":  "application/pdf",
+    "byte_size":  524288,
+    "checksum":   "sha256:abc..."
+  },
+  "parser": {
+    "name":    "docling",
+    "version": "2.4.1",
+    "ocr":     true
+  },
+  "pages": [
+    {
+      "index":  1,
+      "text":   "...full page text...",
+      "tokens": 812,
+      "bbox":   [0, 0, 612, 792],
+      "blocks": [
+        { "type": "heading|paragraph|table|figure|list",
+          "text": "...", "bbox": [...] }
+      ]
+    }
+  ],
+  "chunks": [
+    {
+      "id":     "c_001",
+      "page":   1,
+      "text":   "...",
+      "tokens": 220,
+      "embedding": [0.012, -0.044, ...]   // optional, see §8.1
+    }
+  ],
+  "outline":  [ { "title": "...", "page": 1, "children": [...] } ],
+  "metadata": { "title": "...", "author": "...", "created_at": "..." },
+  "created_at": "2026-05-18T10:00:00Z"
+}
+
+  8.1  EMBEDDINGS
+       • If embeddings are inlined, file size grows roughly linearly
+         with pages × chunks × dims × 4 bytes.
+       • For documents > ~50 pages, prefer storing embeddings in a
+         vector DB and emitting only chunk IDs here. The agent must
+         accept either shape on the warm path.
+
+──────────────────────────────────────────────────────────────────────
+9. MULTIPART REQUESTS  (only when using inline attachments)
+──────────────────────────────────────────────────────────────────────
+Content-Type: multipart/form-data
+
+  • Part "request"  — application/json, the full JSON body above.
+  • Part "<ref>"    — binary, one per inline attachment, named to
+                      match `source.ref` (e.g. "att_1_file").
+
+Otherwise prefer pure JSON with storage refs — it's simpler, cheaper,
+and avoids re-uploading bytes the Python service can fetch directly.
+
+──────────────────────────────────────────────────────────────────────
+10. ERROR ENVELOPE
+──────────────────────────────────────────────────────────────────────
+Any non-2xx response uses:
+
+{
+  "request_id": "uuid",
+  "status":     "error",
+  "error": {
+    "code":    "ATTACHMENT_FETCH_FAILED",
+    "message": "Human-readable summary",
+    "details": { "attachment_id": "att_1", "http_status": 403 },
+    "retryable": false
+  }
+}
+
+Standard codes:
+  400  INVALID_REQUEST            Schema / validation failure
+  401  UNAUTHORIZED               Missing/invalid bearer key
+  403  ATTACHMENT_FORBIDDEN       Storage credentials rejected
+  404  ATTACHMENT_NOT_FOUND       Object/blob missing
+  409  PAGEINDEX_VERSION_MISMATCH Re-generate (caller should drop old)
+  413  ATTACHMENT_TOO_LARGE
+  415  UNSUPPORTED_MIME
+  422  PARSING_FAILED             File present but unparseable
+  429  RATE_LIMITED               Includes Retry-After
+  500  INTERNAL_ERROR
+  503  MODEL_UNAVAILABLE          Retryable
+
+`retryable: true` means the caller can safely retry with backoff.
+
+──────────────────────────────────────────────────────────────────────
+11. END-TO-END FLOWS
+──────────────────────────────────────────────────────────────────────
+
+  11.1  COLD PATH (first time seeing this file)
+
+    Next.js              Storage (GCS/Azure)         Python Agent
+       │                       │                          │
+       │ generate signed URL   │                          │
+       ├──────────────────────►│                          │
+       │◄──────────────────────┤                          │
+       │                                                  │
+       │ POST /v1/documents/process                       │
+       │ { prompt, attachments:[{source:signed_url}] }    │
+       ├─────────────────────────────────────────────────►│
+       │                                                  │ fetch bytes
+       │                                                  │ parse + index
+       │                                                  │ retrieve + answer
+       │ 200 { answer, attachments:[{pageindex,...}] }    │
+       │◄─────────────────────────────────────────────────┤
+       │                                                  │
+       │ write pageindex.json next to source              │
+       ├──────────────────────►│                          │
+       │                                                  │
+
+  11.2  WARM PATH (file has a pageindex)
+
+    Next.js                                            Python Agent
+       │ POST /v1/documents/process                       │
+       │ { prompt,                                        │
+       │   attachments:[{                                 │
+       │     source:    {signed_url to source},           │
+       │     pageindex: {signed_url to pageindex.json}    │
+       │   }] }                                           │
+       ├─────────────────────────────────────────────────►│
+       │                                                  │ fetch pageindex
+       │                                                  │ (skip parse)
+       │                                                  │ retrieve + answer
+       │ 200 { answer, attachments:[{used:"reused"}] }    │
+       │◄─────────────────────────────────────────────────┤
+
+Notes:
+  • `source` is still passed on warm path so the agent can verify
+    the checksum and detect stale pageindexes (returns 409 if so).
+  • If the agent gets a 409, the caller drops the old pageindex,
+    retries as cold, then re-saves.
+
+──────────────────────────────────────────────────────────────────────
+12. EXAMPLES
+──────────────────────────────────────────────────────────────────────
+
+  12.1  COLD — GCS signed URL
+
+  POST /v1/documents/process
+  Authorization: Bearer sk_live_...
+  X-Project-Id: rocket-ai
+  Content-Type: application/json
+
+  {
+    "prompt": "Summarize the termination clauses.",
+    "attachments": [{
+      "id": "att_1",
+      "filename": "contract.pdf",
+      "mime_type": "application/pdf",
+      "source": {
+        "type": "gcs",
+        "bucket": "rocket-docs",
+        "object": "tenants/42/contract.pdf",
+        "auth": { "mode": "signed_url",
+                  "signed_url": "https://storage.googleapis.com/..." }
+      }
+    }],
+    "options": { "return_pageindex": true }
+  }
+
+  → 200
+  {
+    "request_id": "1f...e9",
+    "status": "success",
+    "answer": { "text": "...", "citations": [...] },
+    "attachments": [{
+      "id": "att_1",
+      "pageindex_used": "generated",
+      "pageindex": { "schema_version": "pageindex/1.0", ... },
+      "suggested_path": "tenants/42/contract.pdf.pageindex.json",
+      "checksum": "sha256:..."
+    }],
+    "usage": {...}, "timing_ms": {...}
+  }
+
+  12.2  WARM — Azure SAS URLs for source AND pageindex
+
+  POST /v1/documents/process
+  {
+    "prompt": "Does this contract auto-renew?",
+    "attachments": [{
+      "id": "att_1",
+      "source": {
+        "type": "azure_blob",
+        "account": "rocket", "container": "docs",
+        "blob": "tenants/42/contract.pdf",
+        "auth": { "mode": "sas_url",
+                  "sas_url": "https://rocket.blob.../contract.pdf?sv=..." }
+      },
+      "pageindex": {
+        "type": "azure_blob",
+        "account": "rocket", "container": "docs",
+        "blob": "tenants/42/contract.pdf.pageindex.json",
+        "auth": { "mode": "sas_url",
+                  "sas_url": "https://rocket.blob.../contract.pdf.pageindex.json?sv=..." }
+      }
+    }]
+  }
+
+──────────────────────────────────────────────────────────────────────
+13. SECURITY & OPERATIONAL NOTES
+──────────────────────────────────────────────────────────────────────
+  • TLS-only. Reject HTTP. HSTS on.
+  • Bearer keys are project-scoped; rotate via secret manager; never
+    commit to repos. Caller injects from env at request time.
+  • Prefer presigned/SAS URLs over passing cloud credentials. When
+    credentials are unavoidable, scope to read-only on the exact
+    object, and set the shortest practical TTL.
+  • The agent MUST NOT log credentials or full document bodies.
+    Logs include: request_id, project, attachment ids/checksums,
+    sizes, MIME, timing, token counts, error codes — nothing else.
+  • PII handling is the caller's responsibility; the agent treats
+    document contents as opaque and does not retain bytes or
+    pageindex after the request completes (unless the deployment
+    explicitly enables a cache).
+  • Idempotency: a repeated `X-Request-Id` within a short TTL
+    returns the cached response if available; otherwise processes
+    normally. Use this to safely retry on transient failures.
+  • Rate limits: per-project, returned in `X-RateLimit-*` headers.
+    Honor `Retry-After` on 429/503.
+
+──────────────────────────────────────────────────────────────────────
+14. CALLER CHECKLIST (Next.js side)
+──────────────────────────────────────────────────────────────────────
+  [ ] On cold call: persist `attachments[].pageindex` to
+      `suggested_path` (or your own convention) atomically.
+  [ ] Maintain a small lookup so warm calls can resolve
+      source-path → pageindex-path without scanning storage.
+  [ ] Always pass `source` on warm calls (enables 409 staleness
+      detection); on 409, drop the cached pageindex and retry cold.
+  [ ] Generate fresh, short-TTL signed/SAS URLs per request.
+      Never reuse URLs across requests or users.
+  [ ] Send `X-Request-Id` (uuid v4) for idempotency + tracing.
+  [ ] On 429/503, exponential backoff respecting `Retry-After`.
+
+──────────────────────────────────────────────────────────────────────
+15. OPEN QUESTIONS FOR THE PYTHON TEAM
+──────────────────────────────────────────────────────────────────────
+  • Parser of record (Docling, Unstructured, PyMuPDF, MarkItDown)?
+    Locks in the `parser.name` value in pageindex and the supported
+    MIME list returned by /v1/capabilities.
+  • Embedding model + dimension? Determines whether embeddings live
+    inline in pageindex or in an external vector store.
+  • Streaming responses (SSE) for `answer.text` — needed in v1 or
+    deferable to v1.1?
+  • Async/job mode for very large documents — return 202 + job id,
+    poll /v1/jobs/{id}? Recommended for files > ~50 MB or > ~200 pp.
+
+══════════════════════════════════════════════════════════════════════
+  END OF SPEC
+══════════════════════════════════════════════════════════════════════
