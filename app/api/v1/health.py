@@ -5,6 +5,7 @@ from __future__ import annotations
 from fastapi import APIRouter
 
 from app.config import get_settings
+from app.core.llm import smoke_test_chat_model
 from app.services.convert import SUPPORTED
 
 router = APIRouter(tags=["v1-meta"])
@@ -19,12 +20,17 @@ def v1_health():
         llm_ok = True
     except RuntimeError:
         pass
+    model_ok, model_error = smoke_test_chat_model()
     repo = s.pageindex_path
     pageindex_ok = (repo / "run_pageindex.py").is_file()
     return {
-        "status": "ok" if llm_ok and pageindex_ok else "degraded",
+        "status": "ok" if llm_ok and model_ok and pageindex_ok else "degraded",
         "llm_provider": s.provider,
         "llm_model": s.chat_model_name,
+        "model_smoke": {
+            "ok": model_ok,
+            "error": model_error,
+        },
         "pageindex": {"available": pageindex_ok, "path": str(repo)},
         "gcs_bucket": s.gcs_bucket,
     }

@@ -6,7 +6,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PAGEINDEX_REPO=/app/PageIndex \
     DATA_DIR=/tmp/data \
     GCP_PROJECT_ID=ligaments-portal \
-    GCS_BUCKET=rocket_uploaded_files
+    GCS_BUCKET=rocket_uploaded_files \
+    GEMINI_MODEL=gemini-3.1-flash-lite
 
 WORKDIR /app
 

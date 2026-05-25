@@ -44,7 +44,7 @@ Copy `.env.example` to `.env` for local development, or set the same variables o
 |----------|----------|---------|-------------|
 | `LLM_PROVIDER` | No | `gemini` | `gemini` or `openai` |
 | `GEMINI_API_KEY` | Yes (if Gemini) | — | [AI Studio](https://aistudio.google.com/apikey) key |
-| `GEMINI_MODEL` | No | `gemini-2.0-flash` | Chat + PageIndex (LiteLLM) model |
+| `GEMINI_MODEL` | No | `gemini-3.1-flash-lite` | Chat + PageIndex (LiteLLM) model |
 | `OPENAI_API_KEY` | Yes (if OpenAI) | — | When `LLM_PROVIDER=openai` |
 | `OPENAI_MODEL` | No | `gpt-4o` | When using OpenAI |
 | `GOOGLE_APPLICATION_CREDENTIALS` | Local GCS | — | Path to service account JSON (see below) |
@@ -83,7 +83,7 @@ uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 
 - **URL:** http://127.0.0.1:8000  
 - **API docs:** http://127.0.0.1:8000/docs  
-- **Health:** http://127.0.0.1:8000/api/health  
+- **Health:** http://127.0.0.1:8000/api/v1/health  
 
 Without GCS credentials the service still starts; GCS-dependent features stay degraded until credentials are configured.
 
@@ -104,6 +104,7 @@ docker build -t docs-processing-agent:local -f Dockerfile .
 ```bash
 docker run --rm -p 8080:8080 \
   -e GEMINI_API_KEY="your-key" \
+  -e GEMINI_MODEL=gemini-3.1-flash-lite \
   -e GOOGLE_APPLICATION_CREDENTIALS=/secrets/sa.json \
   -e GCP_PROJECT_ID=ligaments-portal \
   -e GCS_BUCKET=rocket_uploaded_files \
@@ -116,11 +117,12 @@ docker run --rm -p 8080:8080 \
 ```bash
 docker run --rm -p 8080:8080 \
   -e GEMINI_API_KEY="your-key" \
+  -e GEMINI_MODEL=gemini-3.1-flash-lite \
   docs-processing-agent:local
 ```
 
 - **URL:** http://127.0.0.1:8080  
-- **Health:** http://127.0.0.1:8080/api/health  
+- **Health:** http://127.0.0.1:8080/api/v1/health  
 
 PageIndex is cloned inside the image at `/app/PageIndex`; no volume mount needed.
 
@@ -171,7 +173,7 @@ gcloud run deploy docs-processing-agent-01 \
   --project=ligaments-portal \
   --service-account=bucket-access@ligaments-portal.iam.gserviceaccount.com \
   --allow-unauthenticated \
-  --set-env-vars="GCP_PROJECT_ID=ligaments-portal,GCS_BUCKET=rocket_uploaded_files,PAGEINDEX_REPO=/app/PageIndex,DATA_DIR=/tmp/data,LLM_PROVIDER=gemini,GEMINI_API_KEY=${GEMINI_API_KEY}"
+  --set-env-vars="GCP_PROJECT_ID=ligaments-portal,GCS_BUCKET=rocket_uploaded_files,PAGEINDEX_REPO=/app/PageIndex,DATA_DIR=/tmp/data,LLM_PROVIDER=gemini,GEMINI_MODEL=gemini-3.1-flash-lite,GEMINI_API_KEY=${GEMINI_API_KEY}"
 ```
 
 #### Option C — Deploy new image only (skip rebuild)
@@ -204,7 +206,7 @@ gcloud run services update docs-processing-agent-01 \
 #### Verify deployment
 
 ```bash
-curl -s "https://docs-processing-agent-01-489651394276.us-central1.run.app/api/health" | python3 -m json.tool
+curl -s "https://docs-processing-agent-01-489651394276.us-central1.run.app/api/v1/health" | python3 -m json.tool
 ```
 
 Expect `"gcs_ready": true` when the runtime service account can access `rocket_uploaded_files`.
@@ -244,9 +246,9 @@ Use the same environment variables and service account permissions as Cloud Run.
 
 | Environment | Base URL | Swagger | Health |
 |-------------|----------|---------|--------|
-| Local (uvicorn) | http://127.0.0.1:8000 | `/docs` | `/api/health` |
-| Local (Docker) | http://127.0.0.1:8080 | `/docs` | `/api/health` |
-| Cloud Run | https://docs-processing-agent-01-489651394276.us-central1.run.app | `/docs` | `/api/health` |
+| Local (uvicorn) | http://127.0.0.1:8000 | `/docs` | `/api/v1/health` |
+| Local (Docker) | http://127.0.0.1:8080 | `/docs` | `/api/v1/health` |
+| Cloud Run | https://docs-processing-agent-01-489651394276.us-central1.run.app | `/docs` | `/api/v1/health` |
 
 Root `/` returns JSON service metadata (not a UI).
 
@@ -277,6 +279,7 @@ Platform contract details: `document-processing-agent.txt`.
 | Docker build `COPY static` failed | Removed — there is no `static/` UI in this repo |
 | GCS `403` / `gcs_ready: false` on Cloud Run | Service must use `bucket-access@ligaments-portal.iam.gserviceaccount.com`, not the default compute SA |
 | `GEMINI_API_KEY is not set` | Set in `.env` locally or Cloud Run env / Secret Manager |
+| `model_smoke.ok: false` | Check `GEMINI_MODEL`; use `gemini-3.1-flash-lite` unless you have verified another id with `generateContent` |
 | PageIndex not found locally | `git clone` into `./PageIndex` and set `PAGEINDEX_REPO=./PageIndex` |
 | Slow indexing | Normal; PageIndex + summaries can take several minutes per document |
 

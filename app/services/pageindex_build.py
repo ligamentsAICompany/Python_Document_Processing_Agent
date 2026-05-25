@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import shutil
 import subprocess
@@ -9,6 +10,8 @@ import sys
 from pathlib import Path
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 
 def _find_repo() -> Path:
@@ -84,6 +87,11 @@ def build_index(canonical_path: Path, mode: str, out_dir: Path) -> Path:
     )
     if result.returncode != 0:
         err = (result.stderr or result.stdout or "unknown error").strip()
+        logger.error(
+            "PageIndex build failed with exit code %s:\n%s",
+            result.returncode,
+            err,
+        )
         raise RuntimeError(f"PageIndex build failed: {err[:2000]}")
 
     stem = canonical_path.stem.replace("_converted", "")

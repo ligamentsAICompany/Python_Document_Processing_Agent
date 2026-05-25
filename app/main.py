@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.router import api_router
 from app.config import get_settings
+from app.core.llm import smoke_test_chat_model
 from app.services.v1.errors import V1Error
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -30,6 +31,15 @@ async def lifespan(app: FastAPI):
         logging.getLogger("uvicorn.error").info(
             "LLM: %s (%s)", s.provider, s.litellm_model
         )
+        model_ok, model_error = smoke_test_chat_model(force=True)
+        if model_ok:
+            logging.getLogger("uvicorn.error").info(
+                "LLM model smoke check passed: %s", s.chat_model_name
+            )
+        else:
+            logging.getLogger("uvicorn.error").warning(
+                "LLM model smoke check failed: %s", model_error
+            )
     except RuntimeError as e:
         logging.getLogger("uvicorn.error").warning("LLM config: %s", e)
     try:

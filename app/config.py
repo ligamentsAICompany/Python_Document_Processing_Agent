@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ROOT = Path(__file__).resolve().parent.parent
 _ENV = _ROOT / ".env"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
 if _ENV.is_file():
     load_dotenv(_ENV, override=True)
 
@@ -25,7 +26,7 @@ class Settings(BaseSettings):
     openai_model: str = "gpt-4o"
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = DEFAULT_GEMINI_MODEL
 
     pageindex_repo: str = "./PageIndex"
     data_dir: str = "./data"
@@ -71,7 +72,7 @@ class Settings(BaseSettings):
     def litellm_model(self) -> str:
         """Model id for PageIndex (LiteLLM)."""
         if self.provider == "gemini":
-            m = (self.gemini_model or "gemini-2.0-flash").strip()
+            m = (self.gemini_model or DEFAULT_GEMINI_MODEL).strip()
             return m if m.startswith("gemini/") else f"gemini/{m}"
         return (self.openai_model or "gpt-4o").strip()
 
@@ -79,7 +80,7 @@ class Settings(BaseSettings):
     def chat_model_name(self) -> str:
         """Model id for LangChain chat (no provider prefix for Gemini)."""
         if self.provider == "gemini":
-            m = (self.gemini_model or "gemini-2.0-flash").strip()
+            m = (self.gemini_model or DEFAULT_GEMINI_MODEL).strip()
             return m.removeprefix("gemini/")
         return (self.openai_model or "gpt-4o").strip()
 

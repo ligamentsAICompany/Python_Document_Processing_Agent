@@ -7,14 +7,18 @@ cd "$ROOT"
 
 PROJECT="${GCP_PROJECT_ID:-ligaments-portal}"
 REGION="${CLOUD_RUN_REGION:-us-central1}"
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.1-flash-lite}"
 SERVICE="docs-processing-agent-01"
 IMAGE="gcr.io/${PROJECT}/${SERVICE}:latest"
 # Same SA as ligaments-portal-*.json used for local GCS access
 GCS_SA="bucket-access@${PROJECT}.iam.gserviceaccount.com"
 
-ENV_VARS="GCP_PROJECT_ID=${PROJECT},GCS_BUCKET=rocket_uploaded_files,PAGEINDEX_REPO=/app/PageIndex,DATA_DIR=/tmp/data,LLM_PROVIDER=gemini"
+ENV_VARS="GCP_PROJECT_ID=${PROJECT},GCS_BUCKET=rocket_uploaded_files,PAGEINDEX_REPO=/app/PageIndex,DATA_DIR=/tmp/data,LLM_PROVIDER=gemini,GEMINI_MODEL=${GEMINI_MODEL}"
 if [[ -n "${GEMINI_API_KEY:-}" ]]; then
   ENV_VARS="${ENV_VARS},GEMINI_API_KEY=${GEMINI_API_KEY}"
+fi
+if [[ -n "${SERVICE_API_KEY:-}" ]]; then
+  ENV_VARS="${ENV_VARS},SERVICE_API_KEY=${SERVICE_API_KEY}"
 fi
 
 echo "==> Building and pushing ${IMAGE}"
@@ -40,4 +44,4 @@ gcloud "${DEPLOY_ARGS[@]}"
 
 URL="$(gcloud run services describe "${SERVICE}" --region="${REGION}" --project="${PROJECT}" --format='value(status.url)')"
 echo "Deployed: ${URL}"
-echo "Health: ${URL}/api/health"
+echo "Health: ${URL}/api/v1/health"

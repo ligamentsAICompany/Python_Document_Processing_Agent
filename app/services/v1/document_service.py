@@ -57,6 +57,125 @@ def _safe_unlink(path: Path) -> None:
     logger.debug("Temp file left on disk (still locked): %s", path)
 
 
+def _message(exc: BaseException) -> str:
+    return str(exc or "")
+
+
+def _is_model_unavailable(exc: BaseException) -> bool:
+    msg = _message(exc)
+    lowered = msg.lower()
+    return (
+        "notfounderror" in lowered
+        or "not_found" in lowered
+        or "no longer available" in lowered
+        or ("model" in lowered and "404" in lowered)
+    )
+
+
+def _is_parse_failure(exc: BaseException) -> bool:
+    msg = _message(exc).lower()
+    return (
+        isinstance(exc, UnicodeDecodeError)
+        or "codec can't decode" in msg
+        or "could not read this csv" in msg
+        or "parsererror" in msg
+    )
+
+
+def _is_transient_backend_failure(exc: BaseException) -> bool:
+    msg = _message(exc).lower()
+    return any(
+        token in msg
+        for token in (
+            "timeout",
+            "timed out",
+            "temporarily unavailable",
+            "resource_exhausted",
+            "rate limit",
+            "rate_limit",
+            "429",
+            "503",
+        )
+    )
+
+
+def _raise_indexing_error(exc: BaseException, *, request_id: str) -> None:
+    logger.exception("Document indexing failed for request_id=%s", request_id)
+    if isinstance(exc, FileNotFoundError):
+        raise V1Error(
+            404,
+            "ATTACHMENT_NOT_FOUND",
+            str(exc),
+            request_id=request_id,
+        ) from exc
+    if _is_parse_failure(exc):
+        raise V1Error(
+            422,
+            "PARSING_FAILED",
+            "Could not read this CSV. Export it as UTF-8 CSV and try again.",
+            request_id=request_id,
+        ) from exc
+    if _is_model_unavailable(exc):
+        raise V1Error(
+            503,
+            "MODEL_UNAVAILABLE",
+            "The configured document-processing model is not available for generation.",
+            request_id=request_id,
+            retryable=False,
+        ) from exc
+    if isinstance(exc, ValueError):
+        message = str(exc)
+        status_code = 415 if "Unsupported file type" in message else 400
+        code = "UNSUPPORTED_MIME" if status_code == 415 else "INVALID_ATTACHMENT"
+        raise V1Error(
+            status_code,
+            code,
+            message,
+            request_id=request_id,
+        ) from exc
+    if isinstance(exc, RuntimeError):
+        retryable = _is_transient_backend_failure(exc)
+        raise V1Error(
+            502,
+            "INDEX_FAILED",
+            "Document indexing failed. Check the document-processing service logs for details.",
+            request_id=request_id,
+            retryable=retryable,
+        ) from exc
+    raise V1Error(
+        500,
+        "DOCUMENT_PROCESSING_FAILED",
+        "Document processing failed. Check the document-processing service logs for details.",
+        request_id=request_id,
+    ) from exc
+
+
+def _raise_generation_error(exc: BaseException, *, request_id: str) -> None:
+    logger.exception("Document answer generation failed for request_id=%s", request_id)
+    if _is_model_unavailable(exc):
+        raise V1Error(
+            503,
+            "MODEL_UNAVAILABLE",
+            "The configured document-processing model is not available for generation.",
+            request_id=request_id,
+            retryable=False,
+        ) from exc
+    if _is_transient_backend_failure(exc):
+        raise V1Error(
+            503,
+            "GENERATION_UNAVAILABLE",
+            "Document answer generation is temporarily unavailable.",
+            request_id=request_id,
+            retryable=True,
+        ) from exc
+    raise V1Error(
+        502,
+        "ANSWER_FAILED",
+        "Document answer generation failed. Check the document-processing service logs for details.",
+        request_id=request_id,
+    ) from exc
+
+
 async def index_documents(
     body: IndexRequest,
     *,
@@ -71,28 +190,8 @@ async def index_documents(
         t_fetch = time.perf_counter()
         try:
             result, parse_ms, pages, _tree = await _index_one_attachment(att, warm=False)
-        except FileNotFoundError as e:
-            raise V1Error(
-                404,
-                "ATTACHMENT_NOT_FOUND",
-                str(e),
-                request_id=request_id,
-            ) from e
-        except ValueError as e:
-            raise V1Error(
-                400,
-                "INVALID_ATTACHMENT",
-                str(e),
-                request_id=request_id,
-            ) from e
-        except RuntimeError as e:
-            raise V1Error(
-                502,
-                "INDEX_FAILED",
-                str(e),
-                request_id=request_id,
-                retryable=True,
-            ) from e
+        except Exception as e:
+            _raise_indexing_error(e, request_id=request_id)
 
         timing.fetch += int((time.perf_counter() - t_fetch) * 1000)
         timing.parse += parse_ms
@@ -128,28 +227,8 @@ async def process_documents(
                 warm=warm,
                 return_pageindex=body.options.return_pageindex,
             )
-        except FileNotFoundError as e:
-            raise V1Error(
-                404,
-                "ATTACHMENT_NOT_FOUND",
-                str(e),
-                request_id=request_id,
-            ) from e
-        except ValueError as e:
-            raise V1Error(
-                400,
-                "INVALID_ATTACHMENT",
-                str(e),
-                request_id=request_id,
-            ) from e
-        except RuntimeError as e:
-            raise V1Error(
-                502,
-                "INDEX_FAILED",
-                str(e),
-                request_id=request_id,
-                retryable=True,
-            ) from e
+        except Exception as e:
+            _raise_indexing_error(e, request_id=request_id)
 
         timing.fetch += int((time.perf_counter() - t_fetch) * 1000)
         timing.parse += parse_ms
@@ -167,7 +246,10 @@ async def process_documents(
         retriever = DocumentRetriever(retriever_path)
         timing.retrieve = int((time.perf_counter() - t_ret) * 1000)
         t_gen = time.perf_counter()
-        answer_text = await retriever.ask(body.prompt)
+        try:
+            answer_text = await retriever.ask(body.prompt)
+        except Exception as e:
+            _raise_generation_error(e, request_id=request_id)
         timing.generate = int((time.perf_counter() - t_gen) * 1000)
     else:
         raise V1Error(

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import csv
 from pathlib import Path
 
 import mammoth
@@ -10,6 +9,7 @@ import pandas as pd
 from markdownify import markdownify
 
 SUPPORTED = {".pdf", ".md", ".markdown", ".docx", ".xlsx", ".xls", ".csv"}
+CSV_ENCODINGS = ("utf-8-sig", "utf-8", "cp1252", "latin1")
 
 
 def assert_supported(filename: str) -> str:
@@ -68,10 +68,40 @@ def _excel_to_md(source: Path, work_dir: Path) -> Path:
 
 def _csv_to_md(source: Path, work_dir: Path) -> Path:
     out = work_dir / f"{source.stem}_converted.md"
-    df = pd.read_csv(source)
+    df = _read_csv_with_fallback(source)
     body = _dataframe_to_md_table(df)
     out.write_text(f"# {source.stem}\n\n{body}", encoding="utf-8")
     return out
+
+
+def _normalize_text(value: object) -> object:
+    if isinstance(value, str):
+        return value.replace("\xa0", " ").strip()
+    return value
+
+
+def _normalize_dataframe_text(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.rename(columns=lambda c: str(_normalize_text(c)))
+    try:
+        return df.map(_normalize_text)
+    except AttributeError:
+        return df.applymap(_normalize_text)
+
+
+def _read_csv_with_fallback(source: Path) -> pd.DataFrame:
+    last_error: UnicodeDecodeError | pd.errors.ParserError | None = None
+    for encoding in CSV_ENCODINGS:
+        try:
+            return _normalize_dataframe_text(pd.read_csv(source, encoding=encoding))
+        except UnicodeDecodeError as e:
+            last_error = e
+        except pd.errors.ParserError as e:
+            last_error = e
+            break
+
+    raise ValueError(
+        "Could not read this CSV. Export it as UTF-8 CSV and try again."
+    ) from last_error
 
 
 def _dataframe_to_md_table(df: pd.DataFrame) -> str:

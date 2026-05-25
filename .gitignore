@@ -18,5 +18,7 @@ PageIndex/
 logs/
 
 # GCP service account keys (never commit)
+service-account.json
+*service-account*.json
 ligaments-portal*.json
 .env.example
